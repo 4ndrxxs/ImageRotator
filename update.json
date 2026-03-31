@@ -1,6 +1,6 @@
 {
-  "versionCode": 6,
-  "versionName": "1.4.0",
-  "apkUrl": "https://github.com/4ndrxxs/ImageRotator/releases/download/v1.4.0/ImageRotator-release.apk",
-  "changelog": "크래시 진단 로그 추가 + Bundle API 페이지 로딩"
+  "versionCode": 7,
+  "versionName": "1.5.0",
+  "apkUrl": "https://github.com/4ndrxxs/ImageRotator/releases/download/v1.5.0/ImageRotator-release.apk",
+  "changelog": "BOM 다운그레이드로 NoSuchMethodError 크래시 수정"
 }
