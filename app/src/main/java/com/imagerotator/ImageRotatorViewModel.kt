@@ -7,6 +7,7 @@ import android.graphics.BitmapFactory
 import android.graphics.Matrix
 import android.net.Uri
 import android.os.Build
+import android.os.Bundle
 import android.provider.MediaStore
 import android.util.Log
 import androidx.compose.runtime.mutableFloatStateOf
@@ -15,6 +16,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.exifinterface.media.ExifInterface
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -37,7 +39,7 @@ class ImageRotatorViewModel(application: Application) : AndroidViewModel(applica
 
     companion object {
         private const val TAG = "ImageRotator"
-        private const val PAGE_SIZE = 100
+        private const val PAGE_SIZE = 80
     }
 
     val allImages = mutableStateListOf<GalleryImage>()
@@ -65,15 +67,21 @@ class ImageRotatorViewModel(application: Application) : AndroidViewModel(applica
                 isLoading.value = true
                 errorText.value = null
                 currentOffset = 0
-                val images = withContext(Dispatchers.IO) { queryPage(PAGE_SIZE, 0) }
+
+                val images = withContext(Dispatchers.IO) {
+                    queryPage(PAGE_SIZE, 0)
+                }
+
                 allImages.clear()
                 allImages.addAll(images)
                 currentOffset = images.size
                 hasMore.value = images.size == PAGE_SIZE
-                Log.d(TAG, "Loaded first page: ${images.size} images")
-            } catch (e: Exception) {
-                Log.e(TAG, "Failed to load gallery", e)
-                errorText.value = "사진을 불러올 수 없습니다: ${e.message}"
+                Log.d(TAG, "First page loaded: ${images.size} images")
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Throwable) {
+                Log.e(TAG, "loadGalleryImages failed", e)
+                errorText.value = "오류: ${e::class.simpleName}: ${e.message}"
             } finally {
                 isLoading.value = false
             }
@@ -85,13 +93,17 @@ class ImageRotatorViewModel(application: Application) : AndroidViewModel(applica
         viewModelScope.launch {
             try {
                 isLoadingMore.value = true
-                val images = withContext(Dispatchers.IO) { queryPage(PAGE_SIZE, currentOffset) }
+                val images = withContext(Dispatchers.IO) {
+                    queryPage(PAGE_SIZE, currentOffset)
+                }
                 allImages.addAll(images)
                 currentOffset += images.size
                 hasMore.value = images.size == PAGE_SIZE
-                Log.d(TAG, "Loaded more: ${images.size} images, total=${allImages.size}")
-            } catch (e: Exception) {
-                Log.e(TAG, "loadMore failed", e)
+                Log.d(TAG, "More loaded: ${images.size}, total=${allImages.size}")
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Throwable) {
+                Log.e(TAG, "loadMoreImages failed", e)
             } finally {
                 isLoadingMore.value = false
             }
@@ -106,16 +118,35 @@ class ImageRotatorViewModel(application: Application) : AndroidViewModel(applica
             MediaStore.Images.Media._ID,
             MediaStore.Images.Media.DISPLAY_NAME
         )
-        // LIMIT/OFFSET appended to sortOrder works on all Android versions (SQLite-backed)
-        val sortOrder = "${MediaStore.Images.Media.DATE_MODIFIED} DESC LIMIT $limit OFFSET $offset"
 
         try {
-            val cursor = resolver.query(collection, projection, null, null, sortOrder)
+            val cursor = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                // API 26+: Bundle 방식 - MediaStore에서 실제로 LIMIT/OFFSET 적용됨
+                val queryArgs = Bundle().apply {
+                    putStringArray(
+                        android.content.ContentResolver.QUERY_ARG_SORT_COLUMNS,
+                        arrayOf(MediaStore.Images.Media.DATE_MODIFIED)
+                    )
+                    putInt(
+                        android.content.ContentResolver.QUERY_ARG_SORT_DIRECTION,
+                        android.content.ContentResolver.QUERY_SORT_DIRECTION_DESCENDING
+                    )
+                    putInt(android.content.ContentResolver.QUERY_ARG_LIMIT, limit)
+                    putInt(android.content.ContentResolver.QUERY_ARG_OFFSET, offset)
+                }
+                resolver.query(collection, projection, queryArgs, null)
+            } else {
+                // API 24-25 fallback: sortOrder에 LIMIT 직접 추가
+                val sortOrder =
+                    "${MediaStore.Images.Media.DATE_MODIFIED} DESC LIMIT $limit OFFSET $offset"
+                resolver.query(collection, projection, null, null, sortOrder)
+            }
+
             cursor?.use { c ->
                 val idCol = c.getColumnIndex(MediaStore.Images.Media._ID)
                 val nameCol = c.getColumnIndex(MediaStore.Images.Media.DISPLAY_NAME)
                 if (idCol < 0) {
-                    Log.e(TAG, "_ID column not found")
+                    Log.e(TAG, "MediaStore: _ID column missing")
                     return images
                 }
                 while (c.moveToNext()) {
@@ -127,12 +158,13 @@ class ImageRotatorViewModel(application: Application) : AndroidViewModel(applica
                         )
                         images.add(GalleryImage(id, uri, name))
                     } catch (e: Exception) {
-                        Log.w(TAG, "Skipping image row: ${e.message}")
+                        Log.w(TAG, "Skip row: ${e.message}")
                     }
                 }
             }
+            Log.d(TAG, "queryPage($limit, $offset) => ${images.size} rows")
         } catch (e: Exception) {
-            Log.e(TAG, "MediaStore query failed", e)
+            Log.e(TAG, "queryPage failed", e)
         }
         return images
     }
@@ -210,7 +242,6 @@ class ImageRotatorViewModel(application: Application) : AndroidViewModel(applica
 
             withContext(Dispatchers.IO) {
                 val resolver = getApplication<Application>().contentResolver
-
                 toProcess.forEachIndexed { index, item ->
                     try {
                         val inputStream = resolver.openInputStream(item.uri)
@@ -236,7 +267,6 @@ class ImageRotatorViewModel(application: Application) : AndroidViewModel(applica
                         out.flush()
                         out.close()
 
-                        // EXIF orientation 리셋
                         try {
                             resolver.openFileDescriptor(item.uri, "rw")?.use { pfd ->
                                 val exif = ExifInterface(pfd.fileDescriptor)
@@ -252,7 +282,7 @@ class ImageRotatorViewModel(application: Application) : AndroidViewModel(applica
                         rotated.recycle()
                         successCount++
                     } catch (e: Exception) {
-                        Log.e(TAG, "Save failed for ${item.uri}: ${e.message}")
+                        Log.e(TAG, "Save failed ${item.uri}: ${e.message}")
                         failCount++
                     }
 
@@ -263,7 +293,6 @@ class ImageRotatorViewModel(application: Application) : AndroidViewModel(applica
             }
 
             isSaving.value = false
-
             resultMessage.value = when {
                 failCount == 0 -> "${successCount}개 저장 완료!"
                 successCount == 0 -> "저장 실패. 파일 접근 권한을 확인하세요."

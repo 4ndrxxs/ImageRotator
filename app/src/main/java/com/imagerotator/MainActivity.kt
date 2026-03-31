@@ -1,6 +1,7 @@
 package com.imagerotator
 
 import android.Manifest
+import android.content.Context
 import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
@@ -34,8 +35,10 @@ import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.lazy.grid.itemsIndexed
 import androidx.compose.foundation.lazy.grid.rememberLazyGridState
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.Check
@@ -77,6 +80,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
@@ -86,99 +90,143 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import coil.compose.AsyncImage
 import coil.request.ImageRequest
 
+private const val CRASH_PREFS = "crash_log"
+private const val CRASH_KEY = "last_crash"
+
 class MainActivity : ComponentActivity() {
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        try {
-            setContent {
-                MaterialTheme(
-                    colorScheme = lightColorScheme(
-                        primary = Color(0xFF1976D2),
-                        onPrimary = Color.White,
-                        primaryContainer = Color(0xFFBBDEFB),
-                        secondary = Color(0xFF455A64),
-                        surface = Color(0xFFFAFAFA),
-                        background = Color(0xFFF5F5F5)
-                    )
-                ) {
-                    Surface(
-                        modifier = Modifier.fillMaxSize(),
-                        color = MaterialTheme.colorScheme.background
-                    ) {
-                        AppRoot()
+
+        // 크래시 로그 저장 핸들러
+        val defaultHandler = Thread.getDefaultUncaughtExceptionHandler()
+        Thread.setDefaultUncaughtExceptionHandler { thread, throwable ->
+            try {
+                val trace = buildString {
+                    append("Thread: ${thread.name}\n")
+                    append("${throwable::class.qualifiedName}: ${throwable.message}\n")
+                    throwable.stackTrace.take(20).forEach { append("  at $it\n") }
+                    var cause = throwable.cause
+                    while (cause != null) {
+                        append("Caused by: ${cause::class.qualifiedName}: ${cause.message}\n")
+                        cause.stackTrace.take(10).forEach { append("  at $it\n") }
+                        cause = cause.cause
                     }
                 }
+                getSharedPreferences(CRASH_PREFS, Context.MODE_PRIVATE)
+                    .edit().putString(CRASH_KEY, trace).commit()
+                Log.e("ImageRotator", "CRASH:\n$trace")
+            } catch (_: Exception) { }
+            defaultHandler?.uncaughtException(thread, throwable)
+        }
+
+        // 이전 크래시 로그 읽기
+        val prevCrash = getSharedPreferences(CRASH_PREFS, Context.MODE_PRIVATE)
+            .getString(CRASH_KEY, null)
+        // 읽은 뒤 삭제 (다음 실행에선 표시 안 함)
+        if (prevCrash != null) {
+            getSharedPreferences(CRASH_PREFS, Context.MODE_PRIVATE)
+                .edit().remove(CRASH_KEY).apply()
+        }
+
+        setContent {
+            MaterialTheme(
+                colorScheme = lightColorScheme(
+                    primary = Color(0xFF1976D2),
+                    onPrimary = Color.White,
+                    primaryContainer = Color(0xFFBBDEFB),
+                    secondary = Color(0xFF455A64),
+                    surface = Color(0xFFFAFAFA),
+                    background = Color(0xFFF5F5F5)
+                )
+            ) {
+                Surface(
+                    modifier = Modifier.fillMaxSize(),
+                    color = MaterialTheme.colorScheme.background
+                ) {
+                    AppRoot(prevCrash)
+                }
             }
-        } catch (e: Exception) {
-            Log.e("ImageRotator", "onCreate crash", e)
         }
     }
 }
 
-fun getImagePermission(): String {
-    return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+fun getImagePermission(): String =
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU)
         Manifest.permission.READ_MEDIA_IMAGES
-    } else {
+    else
         Manifest.permission.READ_EXTERNAL_STORAGE
-    }
-}
 
-fun hasImagePermission(context: android.content.Context): Boolean {
-    return ContextCompat.checkSelfPermission(
-        context, getImagePermission()
-    ) == PackageManager.PERMISSION_GRANTED
-}
+fun hasImagePermission(context: Context): Boolean =
+    ContextCompat.checkSelfPermission(context, getImagePermission()) ==
+            PackageManager.PERMISSION_GRANTED
 
 @Composable
-fun AppRoot() {
+fun AppRoot(prevCrashLog: String? = null) {
     val context = LocalContext.current
     val viewModel: ImageRotatorViewModel = viewModel()
 
-    var permissionGranted by remember {
-        mutableStateOf(hasImagePermission(context))
-    }
+    var permissionGranted by remember { mutableStateOf(hasImagePermission(context)) }
 
     val permissionLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.RequestPermission()
+        ActivityResultContracts.RequestPermission()
     ) { granted ->
         permissionGranted = granted
     }
 
-    // 권한이 있으면 로드 (권한 상태 변경 시 한 번만 실행)
+    // 권한 허용되면 이미지 로드
     LaunchedEffect(permissionGranted) {
         if (permissionGranted) {
-            try {
-                viewModel.loadGalleryImages()
-            } catch (e: Exception) {
-                Log.e("ImageRotator", "loadGallery failed", e)
-            }
+            viewModel.loadGalleryImages()
         }
     }
 
-    // OTA 업데이트
+    // OTA 업데이트 체크
     var showUpdateDialog by remember { mutableStateOf(false) }
     var updateInfo by remember { mutableStateOf<UpdateChecker.UpdateInfo?>(null) }
-
     LaunchedEffect(Unit) {
         try {
-            val versionCode = try {
+            val versionCode = runCatching {
                 val pInfo = context.packageManager.getPackageInfo(context.packageName, 0)
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P)
                     pInfo.longVersionCode.toInt()
-                } else {
-                    @Suppress("DEPRECATION")
-                    pInfo.versionCode
-                }
-            } catch (_: Exception) { 1 }
+                else @Suppress("DEPRECATION") pInfo.versionCode
+            }.getOrDefault(1)
 
-            val info = UpdateChecker.checkForUpdate(versionCode)
-            if (info != null) {
-                updateInfo = info
+            UpdateChecker.checkForUpdate(versionCode)?.let {
+                updateInfo = it
                 showUpdateDialog = true
             }
         } catch (_: Exception) { }
     }
 
+    // 이전 크래시 로그 다이얼로그
+    var showCrashDialog by remember { mutableStateOf(prevCrashLog != null) }
+    if (showCrashDialog && prevCrashLog != null) {
+        AlertDialog(
+            onDismissRequest = { showCrashDialog = false },
+            title = { Text("⚠️ 이전 실행 시 오류 발생", fontWeight = FontWeight.Bold, color = Color.Red) },
+            text = {
+                val scroll = rememberScrollState()
+                Text(
+                    prevCrashLog,
+                    fontFamily = FontFamily.Monospace,
+                    fontSize = 10.sp,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(300.dp)
+                        .verticalScroll(scroll)
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = { showCrashDialog = false }) {
+                    Text("확인")
+                }
+            }
+        )
+    }
+
+    // 업데이트 다이얼로그
     if (showUpdateDialog && updateInfo != null) {
         AlertDialog(
             onDismissRequest = { showUpdateDialog = false },
@@ -187,9 +235,7 @@ fun AppRoot() {
             confirmButton = {
                 TextButton(onClick = {
                     showUpdateDialog = false
-                    try {
-                        UpdateChecker.downloadAndInstall(context, updateInfo!!)
-                    } catch (_: Exception) { }
+                    runCatching { UpdateChecker.downloadAndInstall(context, updateInfo!!) }
                 }) { Text("업데이트", fontWeight = FontWeight.Bold) }
             },
             dismissButton = {
@@ -199,9 +245,7 @@ fun AppRoot() {
     }
 
     if (!permissionGranted) {
-        PermissionScreen {
-            permissionLauncher.launch(getImagePermission())
-        }
+        PermissionScreen { permissionLauncher.launch(getImagePermission()) }
     } else {
         val currentScreen by viewModel.screen
         when (currentScreen) {
@@ -238,13 +282,13 @@ fun GalleryScreen(vm: ImageRotatorViewModel) {
 
     val gridState = rememberLazyGridState()
 
-    // 스크롤 끝 감지 → 더 로드
+    // 스크롤 끝 근처 → 다음 페이지 로드
     LaunchedEffect(gridState) {
         snapshotFlow { gridState.layoutInfo }
-            .collect { layoutInfo ->
-                val total = layoutInfo.totalItemsCount
-                val lastVisible = layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: 0
-                if (total > 0 && lastVisible >= total - 16) {
+            .collect { info ->
+                val total = info.totalItemsCount
+                val lastIdx = info.visibleItemsInfo.lastOrNull()?.index ?: 0
+                if (total > 0 && lastIdx >= total - 16) {
                     vm.loadMoreImages()
                 }
             }
@@ -298,64 +342,54 @@ fun GalleryScreen(vm: ImageRotatorViewModel) {
         }
     ) { padding ->
         when {
-            isLoading -> {
-                Box(
-                    Modifier.fillMaxSize().padding(padding),
-                    contentAlignment = Alignment.Center
-                ) { CircularProgressIndicator() }
-            }
-            errorText != null -> {
-                Box(
-                    Modifier.fillMaxSize().padding(padding),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                        Text(errorText ?: "", color = Color.Red, fontSize = 14.sp)
-                        Spacer(Modifier.height(16.dp))
-                        Button(onClick = { vm.loadGalleryImages() }) {
-                            Text("다시 시도")
-                        }
-                    }
-                }
-            }
-            images.isEmpty() -> {
-                Box(
-                    Modifier.fillMaxSize().padding(padding),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Text("사진이 없습니다", color = Color.Gray, fontSize = 16.sp)
-                }
-            }
-            else -> {
-                LazyVerticalGrid(
-                    state = gridState,
-                    columns = GridCells.Fixed(4),
-                    modifier = Modifier.fillMaxSize().padding(padding),
-                    contentPadding = PaddingValues(2.dp),
-                    horizontalArrangement = Arrangement.spacedBy(2.dp),
-                    verticalArrangement = Arrangement.spacedBy(2.dp)
-                ) {
-                    items(
-                        items = images,
-                        key = { it.id }
-                    ) { image ->
-                        GalleryThumbnail(
-                            uri = image.uri,
-                            isSelected = image.id in selectedIds,
-                            onToggle = { vm.toggleSelection(image.id) }
-                        )
-                    }
+            isLoading -> Box(
+                Modifier.fillMaxSize().padding(padding),
+                contentAlignment = Alignment.Center
+            ) { CircularProgressIndicator() }
 
-                    // 하단 로딩 인디케이터
-                    if (isLoadingMore) {
-                        item(span = { GridItemSpan(4) }) {
-                            Box(
-                                Modifier.fillMaxWidth().padding(12.dp),
-                                contentAlignment = Alignment.Center
-                            ) {
-                                CircularProgressIndicator(modifier = Modifier.size(24.dp))
-                            }
-                        }
+            errorText != null -> Box(
+                Modifier.fillMaxSize().padding(padding),
+                contentAlignment = Alignment.Center
+            ) {
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    Text(
+                        errorText ?: "",
+                        color = Color.Red,
+                        fontSize = 12.sp,
+                        fontFamily = FontFamily.Monospace,
+                        modifier = Modifier.padding(16.dp)
+                    )
+                    Spacer(Modifier.height(16.dp))
+                    Button(onClick = { vm.loadGalleryImages() }) { Text("다시 시도") }
+                }
+            }
+
+            images.isEmpty() -> Box(
+                Modifier.fillMaxSize().padding(padding),
+                contentAlignment = Alignment.Center
+            ) { Text("사진이 없습니다", color = Color.Gray, fontSize = 16.sp) }
+
+            else -> LazyVerticalGrid(
+                state = gridState,
+                columns = GridCells.Fixed(4),
+                modifier = Modifier.fillMaxSize().padding(padding),
+                contentPadding = PaddingValues(2.dp),
+                horizontalArrangement = Arrangement.spacedBy(2.dp),
+                verticalArrangement = Arrangement.spacedBy(2.dp)
+            ) {
+                items(items = images, key = { it.id }) { image ->
+                    GalleryThumbnail(
+                        uri = image.uri,
+                        isSelected = image.id in selectedIds,
+                        onToggle = { vm.toggleSelection(image.id) }
+                    )
+                }
+                if (isLoadingMore) {
+                    item(span = { GridItemSpan(4) }) {
+                        Box(
+                            Modifier.fillMaxWidth().padding(12.dp),
+                            contentAlignment = Alignment.Center
+                        ) { CircularProgressIndicator(modifier = Modifier.size(24.dp)) }
                     }
                 }
             }
@@ -364,11 +398,7 @@ fun GalleryScreen(vm: ImageRotatorViewModel) {
 }
 
 @Composable
-fun GalleryThumbnail(
-    uri: Uri,
-    isSelected: Boolean,
-    onToggle: () -> Unit
-) {
+fun GalleryThumbnail(uri: Uri, isSelected: Boolean, onToggle: () -> Unit) {
     Box(
         modifier = Modifier
             .aspectRatio(1f)
@@ -389,7 +419,6 @@ fun GalleryThumbnail(
             modifier = Modifier.fillMaxSize(),
             contentScale = ContentScale.Crop
         )
-
         if (isSelected) {
             Box(
                 modifier = Modifier
@@ -463,7 +492,7 @@ fun RotateScreen(vm: ImageRotatorViewModel) {
             val rotatedCount = items.count { it.rotation != 0 }
             Text(
                 "사진 탭 = 개별 90° 회전" +
-                    if (rotatedCount > 0) " · ${rotatedCount}개 대기" else "",
+                        if (rotatedCount > 0) " · ${rotatedCount}개 대기" else "",
                 modifier = Modifier.padding(12.dp),
                 color = MaterialTheme.colorScheme.primary,
                 fontSize = 13.sp
@@ -547,12 +576,7 @@ fun RotateScreen(vm: ImageRotatorViewModel) {
 }
 
 @Composable
-fun RotateThumbnail(
-    uri: Uri,
-    rotation: Int,
-    onClick: () -> Unit,
-    enabled: Boolean
-) {
+fun RotateThumbnail(uri: Uri, rotation: Int, onClick: () -> Unit, enabled: Boolean) {
     val hasRotation = rotation != 0
     Box(
         modifier = Modifier
@@ -574,7 +598,6 @@ fun RotateThumbnail(
             modifier = Modifier.fillMaxSize(),
             contentScale = ContentScale.Crop
         )
-
         if (hasRotation) {
             Box(
                 modifier = Modifier
@@ -583,7 +606,12 @@ fun RotateThumbnail(
                     .background(Color(0xFF4CAF50), RoundedCornerShape(4.dp))
                     .padding(horizontal = 6.dp, vertical = 2.dp)
             ) {
-                Text("${rotation}°", color = Color.White, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                Text(
+                    "${rotation}°",
+                    color = Color.White,
+                    fontSize = 11.sp,
+                    fontWeight = FontWeight.Bold
+                )
             }
         }
     }
