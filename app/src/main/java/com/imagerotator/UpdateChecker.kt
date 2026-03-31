@@ -31,7 +31,7 @@ import java.util.concurrent.TimeUnit
 object UpdateChecker {
 
     // ★ 여기에 update.json URL을 설정하세요
-    private const val UPDATE_URL = "https://raw.githubusercontent.com/YOUR_USERNAME/ImageRotator/main/update.json"
+    private const val UPDATE_URL = "https://raw.githubusercontent.com/4ndrxxs/ImageRotator/main/update.json"
 
     private val client = OkHttpClient.Builder()
         .connectTimeout(10, TimeUnit.SECONDS)
