@@ -37,11 +37,16 @@ class ImageRotatorViewModel(application: Application) : AndroidViewModel(applica
 
     companion object {
         private const val TAG = "ImageRotator"
+        private const val PAGE_SIZE = 100
     }
 
     val allImages = mutableStateListOf<GalleryImage>()
     val isLoading = mutableStateOf(false)
+    val isLoadingMore = mutableStateOf(false)
+    val hasMore = mutableStateOf(true)
     val errorText = mutableStateOf<String?>(null)
+
+    private var currentOffset = 0
 
     val selectedIds = mutableStateOf(emptySet<Long>())
 
@@ -54,16 +59,18 @@ class ImageRotatorViewModel(application: Application) : AndroidViewModel(applica
     val resultMessage = mutableStateOf<String?>(null)
 
     fun loadGalleryImages() {
+        if (isLoading.value) return
         viewModelScope.launch {
             try {
                 isLoading.value = true
                 errorText.value = null
-                val images = withContext(Dispatchers.IO) {
-                    queryMediaStoreSafe()
-                }
+                currentOffset = 0
+                val images = withContext(Dispatchers.IO) { queryPage(PAGE_SIZE, 0) }
                 allImages.clear()
                 allImages.addAll(images)
-                Log.d(TAG, "Loaded ${images.size} images")
+                currentOffset = images.size
+                hasMore.value = images.size == PAGE_SIZE
+                Log.d(TAG, "Loaded first page: ${images.size} images")
             } catch (e: Exception) {
                 Log.e(TAG, "Failed to load gallery", e)
                 errorText.value = "사진을 불러올 수 없습니다: ${e.message}"
@@ -73,31 +80,44 @@ class ImageRotatorViewModel(application: Application) : AndroidViewModel(applica
         }
     }
 
-    private fun queryMediaStoreSafe(): List<GalleryImage> {
+    fun loadMoreImages() {
+        if (isLoadingMore.value || !hasMore.value || isLoading.value) return
+        viewModelScope.launch {
+            try {
+                isLoadingMore.value = true
+                val images = withContext(Dispatchers.IO) { queryPage(PAGE_SIZE, currentOffset) }
+                allImages.addAll(images)
+                currentOffset += images.size
+                hasMore.value = images.size == PAGE_SIZE
+                Log.d(TAG, "Loaded more: ${images.size} images, total=${allImages.size}")
+            } catch (e: Exception) {
+                Log.e(TAG, "loadMore failed", e)
+            } finally {
+                isLoadingMore.value = false
+            }
+        }
+    }
+
+    private fun queryPage(limit: Int, offset: Int): List<GalleryImage> {
         val resolver = getApplication<Application>().contentResolver
         val images = mutableListOf<GalleryImage>()
-
-        // 항상 EXTERNAL_CONTENT_URI 사용 (VOLUME_EXTERNAL은 일부 기기에서 크래시)
         val collection = MediaStore.Images.Media.EXTERNAL_CONTENT_URI
-
         val projection = arrayOf(
             MediaStore.Images.Media._ID,
             MediaStore.Images.Media.DISPLAY_NAME
         )
-
-        val sortOrder = "${MediaStore.Images.Media.DATE_MODIFIED} DESC"
+        // LIMIT/OFFSET appended to sortOrder works on all Android versions (SQLite-backed)
+        val sortOrder = "${MediaStore.Images.Media.DATE_MODIFIED} DESC LIMIT $limit OFFSET $offset"
 
         try {
             val cursor = resolver.query(collection, projection, null, null, sortOrder)
             cursor?.use { c ->
                 val idCol = c.getColumnIndex(MediaStore.Images.Media._ID)
                 val nameCol = c.getColumnIndex(MediaStore.Images.Media.DISPLAY_NAME)
-
                 if (idCol < 0) {
                     Log.e(TAG, "_ID column not found")
                     return images
                 }
-
                 while (c.moveToNext()) {
                     try {
                         val id = c.getLong(idCol)
@@ -114,7 +134,6 @@ class ImageRotatorViewModel(application: Application) : AndroidViewModel(applica
         } catch (e: Exception) {
             Log.e(TAG, "MediaStore query failed", e)
         }
-
         return images
     }
 

@@ -29,9 +29,11 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.GridItemSpan
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.lazy.grid.itemsIndexed
+import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -68,6 +70,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -129,8 +132,6 @@ fun hasImagePermission(context: android.content.Context): Boolean {
 @Composable
 fun AppRoot() {
     val context = LocalContext.current
-
-    // ViewModel을 try-catch로 생성
     val viewModel: ImageRotatorViewModel = viewModel()
 
     var permissionGranted by remember {
@@ -141,27 +142,20 @@ fun AppRoot() {
         contract = ActivityResultContracts.RequestPermission()
     ) { granted ->
         permissionGranted = granted
-        if (granted) {
-            try {
-                viewModel.loadGalleryImages()
-            } catch (e: Exception) {
-                Log.e("ImageRotator", "loadGallery after permission", e)
-            }
-        }
     }
 
-    // 권한이 이미 있으면 바로 로드
+    // 권한이 있으면 로드 (권한 상태 변경 시 한 번만 실행)
     LaunchedEffect(permissionGranted) {
         if (permissionGranted) {
             try {
                 viewModel.loadGalleryImages()
             } catch (e: Exception) {
-                Log.e("ImageRotator", "loadGallery in LaunchedEffect", e)
+                Log.e("ImageRotator", "loadGallery failed", e)
             }
         }
     }
 
-    // OTA 업데이트 (별도 LaunchedEffect, 실패해도 앱에 영향 없음)
+    // OTA 업데이트
     var showUpdateDialog by remember { mutableStateOf(false) }
     var updateInfo by remember { mutableStateOf<UpdateChecker.UpdateInfo?>(null) }
 
@@ -185,7 +179,6 @@ fun AppRoot() {
         } catch (_: Exception) { }
     }
 
-    // 업데이트 다이얼로그
     if (showUpdateDialog && updateInfo != null) {
         AlertDialog(
             onDismissRequest = { showUpdateDialog = false },
@@ -205,7 +198,6 @@ fun AppRoot() {
         )
     }
 
-    // 메인 화면
     if (!permissionGranted) {
         PermissionScreen {
             permissionLauncher.launch(getImagePermission())
@@ -240,8 +232,23 @@ fun GalleryScreen(vm: ImageRotatorViewModel) {
     val images = vm.allImages
     val selectedIds by vm.selectedIds
     val isLoading by vm.isLoading
+    val isLoadingMore by vm.isLoadingMore
     val errorText by vm.errorText
     val selectedCount = selectedIds.size
+
+    val gridState = rememberLazyGridState()
+
+    // 스크롤 끝 감지 → 더 로드
+    LaunchedEffect(gridState) {
+        snapshotFlow { gridState.layoutInfo }
+            .collect { layoutInfo ->
+                val total = layoutInfo.totalItemsCount
+                val lastVisible = layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: 0
+                if (total > 0 && lastVisible >= total - 16) {
+                    vm.loadMoreImages()
+                }
+            }
+    }
 
     Scaffold(
         topBar = {
@@ -321,6 +328,7 @@ fun GalleryScreen(vm: ImageRotatorViewModel) {
             }
             else -> {
                 LazyVerticalGrid(
+                    state = gridState,
                     columns = GridCells.Fixed(4),
                     modifier = Modifier.fillMaxSize().padding(padding),
                     contentPadding = PaddingValues(2.dp),
@@ -336,6 +344,18 @@ fun GalleryScreen(vm: ImageRotatorViewModel) {
                             isSelected = image.id in selectedIds,
                             onToggle = { vm.toggleSelection(image.id) }
                         )
+                    }
+
+                    // 하단 로딩 인디케이터
+                    if (isLoadingMore) {
+                        item(span = { GridItemSpan(4) }) {
+                            Box(
+                                Modifier.fillMaxWidth().padding(12.dp),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                CircularProgressIndicator(modifier = Modifier.size(24.dp))
+                            }
+                        }
                     }
                 }
             }
