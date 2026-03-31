@@ -1,6 +1,6 @@
 {
-  "versionCode": 2,
-  "versionName": "1.1.0",
-  "apkUrl": "https://github.com/4ndrxxs/ImageRotator/releases/download/v1.1.0/ImageRotator-release.apk",
-  "changelog": "인앱 갤러리로 전환! 앱 실행 즉시 전체 사진 표시, 선택 후 바로 회전/저장"
+  "versionCode": 3,
+  "versionName": "1.2.0",
+  "apkUrl": "https://github.com/4ndrxxs/ImageRotator/releases/download/v1.2.0/ImageRotator-release.apk",
+  "changelog": "크래시 수정, 안정성 개선"
 }

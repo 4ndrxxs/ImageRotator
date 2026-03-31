@@ -13,16 +13,58 @@ import androidx.compose.animation.animateContentSize
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.aspectRatio
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.itemsIndexed
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.*
-import androidx.compose.material3.*
-import androidx.compose.runtime.*
+import androidx.compose.material.icons.filled.ArrowBack
+import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.CheckBox
+import androidx.compose.material.icons.filled.CheckBoxOutlineBlank
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.PhotoLibrary
+import androidx.compose.material.icons.filled.RotateLeft
+import androidx.compose.material.icons.filled.RotateRight
+import androidx.compose.material.icons.filled.Save
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.ExtendedFloatingActionButton
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.LinearProgressIndicator
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.material3.TopAppBar
+import androidx.compose.material3.TopAppBarDefaults
+import androidx.compose.material3.lightColorScheme
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -77,17 +119,11 @@ fun AppRoot(viewModel: ImageRotatorViewModel = viewModel()) {
         if (granted) viewModel.loadGalleryImages()
     }
 
-    // 권한 확인 및 요청
     LaunchedEffect(Unit) {
         if (hasPermission) {
             viewModel.loadGalleryImages()
         } else {
-            val permission = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                Manifest.permission.READ_MEDIA_IMAGES
-            } else {
-                Manifest.permission.READ_EXTERNAL_STORAGE
-            }
-            permissionLauncher.launch(permission)
+            permissionLauncher.launch(getImagePermission())
         }
     }
 
@@ -96,20 +132,24 @@ fun AppRoot(viewModel: ImageRotatorViewModel = viewModel()) {
     var showUpdateDialog by remember { mutableStateOf(false) }
 
     LaunchedEffect(Unit) {
-        val currentVersionCode = try {
-            val pInfo = context.packageManager.getPackageInfo(context.packageName, 0)
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
-                pInfo.longVersionCode.toInt()
-            } else {
-                @Suppress("DEPRECATION")
-                pInfo.versionCode
-            }
-        } catch (_: PackageManager.NameNotFoundException) { 1 }
+        try {
+            val currentVersionCode = try {
+                val pInfo = context.packageManager.getPackageInfo(context.packageName, 0)
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                    pInfo.longVersionCode.toInt()
+                } else {
+                    @Suppress("DEPRECATION")
+                    pInfo.versionCode
+                }
+            } catch (_: PackageManager.NameNotFoundException) { 1 }
 
-        val info = UpdateChecker.checkForUpdate(currentVersionCode)
-        if (info != null) {
-            updateInfo = info
-            showUpdateDialog = true
+            val info = UpdateChecker.checkForUpdate(currentVersionCode)
+            if (info != null) {
+                updateInfo = info
+                showUpdateDialog = true
+            }
+        } catch (_: Exception) {
+            // OTA 실패해도 앱은 정상 동작
         }
     }
 
@@ -121,14 +161,18 @@ fun AppRoot(viewModel: ImageRotatorViewModel = viewModel()) {
             text = {
                 Text(
                     if (info.changelog.isNotEmpty()) info.changelog
-                    else "새로운 버전이 있습니다. 업데이트 하시겠습니까?"
+                    else "새로운 버전이 있습니다."
                 )
             },
             confirmButton = {
                 TextButton(onClick = {
                     showUpdateDialog = false
-                    UpdateChecker.downloadAndInstall(context, info)
-                    Toast.makeText(context, "다운로드 시작...", Toast.LENGTH_SHORT).show()
+                    try {
+                        UpdateChecker.downloadAndInstall(context, info)
+                        Toast.makeText(context, "다운로드 시작...", Toast.LENGTH_SHORT).show()
+                    } catch (_: Exception) {
+                        Toast.makeText(context, "다운로드 실패", Toast.LENGTH_SHORT).show()
+                    }
                 }) {
                     Text("업데이트", fontWeight = FontWeight.Bold)
                 }
@@ -141,12 +185,7 @@ fun AppRoot(viewModel: ImageRotatorViewModel = viewModel()) {
 
     if (!hasPermission) {
         PermissionScreen(onRetry = {
-            val permission = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                Manifest.permission.READ_MEDIA_IMAGES
-            } else {
-                Manifest.permission.READ_EXTERNAL_STORAGE
-            }
-            permissionLauncher.launch(permission)
+            permissionLauncher.launch(getImagePermission())
         })
     } else {
         val screen by viewModel.screen
@@ -157,13 +196,18 @@ fun AppRoot(viewModel: ImageRotatorViewModel = viewModel()) {
     }
 }
 
-fun checkImagePermission(context: android.content.Context): Boolean {
-    val permission = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+private fun getImagePermission(): String {
+    return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
         Manifest.permission.READ_MEDIA_IMAGES
     } else {
         Manifest.permission.READ_EXTERNAL_STORAGE
     }
-    return ContextCompat.checkSelfPermission(context, permission) == PackageManager.PERMISSION_GRANTED
+}
+
+fun checkImagePermission(context: android.content.Context): Boolean {
+    return ContextCompat.checkSelfPermission(
+        context, getImagePermission()
+    ) == PackageManager.PERMISSION_GRANTED
 }
 
 // ─── 권한 없을 때 화면 ───
@@ -208,19 +252,19 @@ fun GalleryScreen(viewModel: ImageRotatorViewModel) {
                 ),
                 actions = {
                     if (selectedCount > 0) {
-                        // 전체 선택
                         IconButton(onClick = {
                             if (selectedCount == allImages.size) viewModel.clearSelection()
                             else viewModel.selectAll()
                         }) {
                             Icon(
-                                if (selectedCount == allImages.size) Icons.Default.Deselect
-                                else Icons.Default.SelectAll,
+                                if (selectedCount == allImages.size)
+                                    Icons.Default.CheckBox
+                                else
+                                    Icons.Default.CheckBoxOutlineBlank,
                                 "전체 선택",
                                 tint = Color.White
                             )
                         }
-                        // 선택 해제
                         IconButton(onClick = { viewModel.clearSelection() }) {
                             Icon(Icons.Default.Close, "선택 해제", tint = Color.White)
                         }
@@ -248,7 +292,11 @@ fun GalleryScreen(viewModel: ImageRotatorViewModel) {
             }
         } else if (allImages.isEmpty()) {
             Box(Modifier.fillMaxSize().padding(padding), contentAlignment = Alignment.Center) {
-                Text("사진이 없습니다", color = Color.Gray, fontSize = 16.sp)
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    Icon(Icons.Default.PhotoLibrary, null, Modifier.size(80.dp), tint = Color.LightGray)
+                    Spacer(Modifier.height(16.dp))
+                    Text("사진이 없습니다", color = Color.Gray, fontSize = 16.sp)
+                }
             }
         } else {
             LazyVerticalGrid(
@@ -292,12 +340,11 @@ fun GalleryThumbnail(
                 .crossfade(true)
                 .size(250)
                 .build(),
-            contentDescription = image.displayName,
+            contentDescription = null,
             modifier = Modifier.fillMaxSize(),
             contentScale = ContentScale.Crop
         )
 
-        // 선택 체크마크
         if (isSelected) {
             Box(
                 modifier = Modifier
@@ -307,8 +354,10 @@ fun GalleryThumbnail(
                     .background(Color(0xFF1976D2), CircleShape),
                 contentAlignment = Alignment.Center
             ) {
-                Icon(Icons.Default.Check, null,
-                    tint = Color.White, modifier = Modifier.size(16.dp))
+                Icon(
+                    Icons.Default.Check, null,
+                    tint = Color.White, modifier = Modifier.size(16.dp)
+                )
             }
         }
     }
@@ -338,14 +387,18 @@ fun RotateScreen(viewModel: ImageRotatorViewModel) {
         AlertDialog(
             onDismissRequest = { viewModel.showConfirmDialog.value = false },
             title = { Text("원본 덮어쓰기") },
-            text = { Text("${rotatedCount}개 이미지를 회전하여 원본에 저장합니다.\n되돌릴 수 없습니다. 계속할까요?") },
+            text = {
+                Text("${rotatedCount}개 이미지를 회전하여 원본에 저장합니다.\n되돌릴 수 없습니다. 계속할까요?")
+            },
             confirmButton = {
                 TextButton(onClick = { viewModel.confirmSave() }) {
                     Text("저장", color = Color(0xFF4CAF50), fontWeight = FontWeight.Bold)
                 }
             },
             dismissButton = {
-                TextButton(onClick = { viewModel.showConfirmDialog.value = false }) { Text("취소") }
+                TextButton(onClick = { viewModel.showConfirmDialog.value = false }) {
+                    Text("취소")
+                }
             }
         )
     }
@@ -353,21 +406,29 @@ fun RotateScreen(viewModel: ImageRotatorViewModel) {
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text("${items.size}개 이미지 회전", fontWeight = FontWeight.Bold) },
+                title = {
+                    Text("${items.size}개 이미지 회전", fontWeight = FontWeight.Bold)
+                },
                 colors = TopAppBarDefaults.topAppBarColors(
                     containerColor = MaterialTheme.colorScheme.primary,
                     titleContentColor = Color.White
                 ),
                 navigationIcon = {
-                    IconButton(onClick = { viewModel.backToGallery() }, enabled = !isSaving) {
+                    IconButton(
+                        onClick = { viewModel.backToGallery() },
+                        enabled = !isSaving
+                    ) {
                         Icon(Icons.Default.ArrowBack, "뒤로", tint = Color.White)
                     }
                 }
             )
         }
     ) { padding ->
-        Column(Modifier.fillMaxSize().padding(padding)) {
-            // 안내 텍스트
+        Column(
+            Modifier
+                .fillMaxSize()
+                .padding(padding)
+        ) {
             val rotatedCount = items.count { it.rotation != 0 }
             Text(
                 buildString {
@@ -380,10 +441,11 @@ fun RotateScreen(viewModel: ImageRotatorViewModel) {
                 fontWeight = FontWeight.Medium
             )
 
-            // 이미지 그리드
             LazyVerticalGrid(
                 columns = GridCells.Fixed(3),
-                modifier = Modifier.weight(1f).padding(horizontal = 4.dp),
+                modifier = Modifier
+                    .weight(1f)
+                    .padding(horizontal = 4.dp),
                 contentPadding = PaddingValues(2.dp),
                 horizontalArrangement = Arrangement.spacedBy(4.dp),
                 verticalArrangement = Arrangement.spacedBy(4.dp)
@@ -397,16 +459,19 @@ fun RotateScreen(viewModel: ImageRotatorViewModel) {
                 }
             }
 
-            // 진행률
             if (isSaving) {
-                Column(Modifier.padding(horizontal = 16.dp, vertical = 8.dp)) {
+                Column(
+                    Modifier.padding(horizontal = 16.dp, vertical = 8.dp)
+                ) {
                     LinearProgressIndicator(
                         progress = progress,
                         modifier = Modifier.fillMaxWidth()
                     )
                     Text(
                         "저장 중... ${(progress * 100).toInt()}%",
-                        modifier = Modifier.fillMaxWidth().padding(top = 4.dp),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(top = 4.dp),
                         textAlign = TextAlign.Center,
                         color = MaterialTheme.colorScheme.primary,
                         fontSize = 13.sp
@@ -414,13 +479,16 @@ fun RotateScreen(viewModel: ImageRotatorViewModel) {
                 }
             }
 
-            // 하단 컨트롤
             Surface(
                 modifier = Modifier.fillMaxWidth(),
                 shadowElevation = 8.dp,
                 color = MaterialTheme.colorScheme.surface
             ) {
-                Column(Modifier.padding(16.dp).animateContentSize()) {
+                Column(
+                    Modifier
+                        .padding(16.dp)
+                        .animateContentSize()
+                ) {
                     Row(
                         Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.spacedBy(12.dp)
@@ -455,7 +523,9 @@ fun RotateScreen(viewModel: ImageRotatorViewModel) {
                         enabled = !isSaving && items.any { it.rotation != 0 },
                         shape = RoundedCornerShape(12.dp),
                         contentPadding = PaddingValues(vertical = 14.dp),
-                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF4CAF50))
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = Color(0xFF4CAF50)
+                        )
                     ) {
                         Icon(Icons.Default.Save, null)
                         Spacer(Modifier.width(8.dp))
@@ -480,7 +550,9 @@ fun RotateThumbnail(
             .aspectRatio(1f)
             .clip(RoundedCornerShape(8.dp))
             .then(
-                if (hasRotation) Modifier.border(2.dp, Color(0xFF4CAF50), RoundedCornerShape(8.dp))
+                if (hasRotation) Modifier.border(
+                    2.dp, Color(0xFF4CAF50), RoundedCornerShape(8.dp)
+                )
                 else Modifier
             )
             .clickable(enabled = enabled) { onClick() }
@@ -504,8 +576,12 @@ fun RotateThumbnail(
                     .background(Color(0xFF4CAF50), RoundedCornerShape(4.dp))
                     .padding(horizontal = 6.dp, vertical = 2.dp)
             ) {
-                Text("${item.rotation}°", color = Color.White,
-                    fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                Text(
+                    "${item.rotation}°",
+                    color = Color.White,
+                    fontSize = 11.sp,
+                    fontWeight = FontWeight.Bold
+                )
             }
         }
     }
