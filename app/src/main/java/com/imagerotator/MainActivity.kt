@@ -1,5 +1,6 @@
 package com.imagerotator
 
+import android.Manifest
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
@@ -8,7 +9,6 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
-import kotlinx.coroutines.launch
 import androidx.compose.animation.animateContentSize
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -20,12 +20,7 @@ import androidx.compose.foundation.lazy.grid.itemsIndexed
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Close
-import androidx.compose.material.icons.filled.Delete
-import androidx.compose.material.icons.filled.PhotoLibrary
-import androidx.compose.material.icons.filled.RotateLeft
-import androidx.compose.material.icons.filled.RotateRight
-import androidx.compose.material.icons.filled.Save
+import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -38,6 +33,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.core.content.ContextCompat
 import androidx.lifecycle.viewmodel.compose.viewModel
 import coil.compose.AsyncImage
 import coil.request.ImageRequest
@@ -60,22 +56,40 @@ class MainActivity : ComponentActivity() {
                     modifier = Modifier.fillMaxSize(),
                     color = MaterialTheme.colorScheme.background
                 ) {
-                    ImageRotatorScreen()
+                    AppRoot()
                 }
             }
         }
     }
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun ImageRotatorScreen(viewModel: ImageRotatorViewModel = viewModel()) {
+fun AppRoot(viewModel: ImageRotatorViewModel = viewModel()) {
     val context = LocalContext.current
-    val images = viewModel.images
-    val isSaving by viewModel.isSaving
-    val progress by viewModel.progress
-    val showConfirmDialog by viewModel.showConfirmDialog
-    val resultMessage by viewModel.resultMessage
+    var hasPermission by remember {
+        mutableStateOf(checkImagePermission(context))
+    }
+
+    val permissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        hasPermission = granted
+        if (granted) viewModel.loadGalleryImages()
+    }
+
+    // 권한 확인 및 요청
+    LaunchedEffect(Unit) {
+        if (hasPermission) {
+            viewModel.loadGalleryImages()
+        } else {
+            val permission = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                Manifest.permission.READ_MEDIA_IMAGES
+            } else {
+                Manifest.permission.READ_EXTERNAL_STORAGE
+            }
+            permissionLauncher.launch(permission)
+        }
+    }
 
     // OTA 업데이트 체크
     var updateInfo by remember { mutableStateOf<UpdateChecker.UpdateInfo?>(null) }
@@ -99,7 +113,6 @@ fun ImageRotatorScreen(viewModel: ImageRotatorViewModel = viewModel()) {
         }
     }
 
-    // 업데이트 다이얼로그
     if (showUpdateDialog && updateInfo != null) {
         val info = updateInfo!!
         AlertDialog(
@@ -121,41 +134,207 @@ fun ImageRotatorScreen(viewModel: ImageRotatorViewModel = viewModel()) {
                 }
             },
             dismissButton = {
-                TextButton(onClick = { showUpdateDialog = false }) {
-                    Text("나중에")
-                }
+                TextButton(onClick = { showUpdateDialog = false }) { Text("나중에") }
             }
         )
     }
 
-    // SAF 문서 선택기 - read/write 권한 자동 부여
-    val docPickerLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.OpenMultipleDocuments()
-    ) { uris ->
-        if (uris.isNotEmpty()) {
-            uris.forEach { uri ->
-                try {
-                    context.contentResolver.takePersistableUriPermission(
-                        uri,
-                        android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION or
-                                android.content.Intent.FLAG_GRANT_WRITE_URI_PERMISSION
-                    )
-                } catch (_: SecurityException) { }
+    if (!hasPermission) {
+        PermissionScreen(onRetry = {
+            val permission = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                Manifest.permission.READ_MEDIA_IMAGES
+            } else {
+                Manifest.permission.READ_EXTERNAL_STORAGE
             }
-            viewModel.addImages(uris)
+            permissionLauncher.launch(permission)
+        })
+    } else {
+        val screen by viewModel.screen
+        when (screen) {
+            AppScreen.GALLERY -> GalleryScreen(viewModel)
+            AppScreen.ROTATE -> RotateScreen(viewModel)
         }
     }
+}
 
-    // 결과 메시지 Toast
+fun checkImagePermission(context: android.content.Context): Boolean {
+    val permission = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+        Manifest.permission.READ_MEDIA_IMAGES
+    } else {
+        Manifest.permission.READ_EXTERNAL_STORAGE
+    }
+    return ContextCompat.checkSelfPermission(context, permission) == PackageManager.PERMISSION_GRANTED
+}
+
+// ─── 권한 없을 때 화면 ───
+
+@Composable
+fun PermissionScreen(onRetry: () -> Unit) {
+    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+            Icon(Icons.Default.PhotoLibrary, null, Modifier.size(80.dp), tint = Color.LightGray)
+            Spacer(Modifier.height(16.dp))
+            Text("사진 접근 권한이 필요합니다", fontSize = 16.sp, color = Color.Gray)
+            Spacer(Modifier.height(16.dp))
+            Button(onClick = onRetry) { Text("권한 허용하기") }
+        }
+    }
+}
+
+// ─── 갤러리 화면 ───
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun GalleryScreen(viewModel: ImageRotatorViewModel) {
+    val allImages = viewModel.allImages
+    val selectedIds by viewModel.selectedIds
+    val isLoading by viewModel.isLoading
+    val selectedCount = selectedIds.size
+
+    Scaffold(
+        topBar = {
+            TopAppBar(
+                title = {
+                    Text(
+                        if (selectedCount > 0) "${selectedCount}개 선택됨"
+                        else "이미지 회전기",
+                        fontWeight = FontWeight.Bold
+                    )
+                },
+                colors = TopAppBarDefaults.topAppBarColors(
+                    containerColor = if (selectedCount > 0) Color(0xFF455A64)
+                    else MaterialTheme.colorScheme.primary,
+                    titleContentColor = Color.White
+                ),
+                actions = {
+                    if (selectedCount > 0) {
+                        // 전체 선택
+                        IconButton(onClick = {
+                            if (selectedCount == allImages.size) viewModel.clearSelection()
+                            else viewModel.selectAll()
+                        }) {
+                            Icon(
+                                if (selectedCount == allImages.size) Icons.Default.Deselect
+                                else Icons.Default.SelectAll,
+                                "전체 선택",
+                                tint = Color.White
+                            )
+                        }
+                        // 선택 해제
+                        IconButton(onClick = { viewModel.clearSelection() }) {
+                            Icon(Icons.Default.Close, "선택 해제", tint = Color.White)
+                        }
+                    }
+                }
+            )
+        },
+        floatingActionButton = {
+            if (selectedCount > 0) {
+                ExtendedFloatingActionButton(
+                    onClick = { viewModel.enterRotateMode() },
+                    containerColor = MaterialTheme.colorScheme.primary,
+                    contentColor = Color.White
+                ) {
+                    Icon(Icons.Default.RotateRight, null)
+                    Spacer(Modifier.width(8.dp))
+                    Text("${selectedCount}개 회전하기")
+                }
+            }
+        }
+    ) { padding ->
+        if (isLoading) {
+            Box(Modifier.fillMaxSize().padding(padding), contentAlignment = Alignment.Center) {
+                CircularProgressIndicator()
+            }
+        } else if (allImages.isEmpty()) {
+            Box(Modifier.fillMaxSize().padding(padding), contentAlignment = Alignment.Center) {
+                Text("사진이 없습니다", color = Color.Gray, fontSize = 16.sp)
+            }
+        } else {
+            LazyVerticalGrid(
+                columns = GridCells.Fixed(4),
+                modifier = Modifier.fillMaxSize().padding(padding),
+                contentPadding = PaddingValues(2.dp),
+                horizontalArrangement = Arrangement.spacedBy(2.dp),
+                verticalArrangement = Arrangement.spacedBy(2.dp)
+            ) {
+                itemsIndexed(allImages) { _, image ->
+                    GalleryThumbnail(
+                        image = image,
+                        isSelected = image.id in selectedIds,
+                        onToggle = { viewModel.toggleSelection(image.id) }
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+fun GalleryThumbnail(
+    image: GalleryImage,
+    isSelected: Boolean,
+    onToggle: () -> Unit
+) {
+    Box(
+        modifier = Modifier
+            .aspectRatio(1f)
+            .clip(RoundedCornerShape(4.dp))
+            .then(
+                if (isSelected) Modifier.border(3.dp, Color(0xFF1976D2), RoundedCornerShape(4.dp))
+                else Modifier
+            )
+            .clickable { onToggle() }
+    ) {
+        AsyncImage(
+            model = ImageRequest.Builder(LocalContext.current)
+                .data(image.uri)
+                .crossfade(true)
+                .size(250)
+                .build(),
+            contentDescription = image.displayName,
+            modifier = Modifier.fillMaxSize(),
+            contentScale = ContentScale.Crop
+        )
+
+        // 선택 체크마크
+        if (isSelected) {
+            Box(
+                modifier = Modifier
+                    .align(Alignment.TopEnd)
+                    .padding(4.dp)
+                    .size(24.dp)
+                    .background(Color(0xFF1976D2), CircleShape),
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(Icons.Default.Check, null,
+                    tint = Color.White, modifier = Modifier.size(16.dp))
+            }
+        }
+    }
+}
+
+// ─── 회전/저장 화면 ───
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun RotateScreen(viewModel: ImageRotatorViewModel) {
+    val context = LocalContext.current
+    val items = viewModel.rotateItems
+    val isSaving by viewModel.isSaving
+    val progress by viewModel.progress
+    val showConfirmDialog by viewModel.showConfirmDialog
+    val resultMessage by viewModel.resultMessage
+
     LaunchedEffect(resultMessage) {
         resultMessage?.let {
             Toast.makeText(context, it, Toast.LENGTH_SHORT).show()
+            viewModel.resultMessage.value = null
         }
     }
 
-    // 저장 확인 다이얼로그
     if (showConfirmDialog) {
-        val rotatedCount = images.count { it.rotation != 0 }
+        val rotatedCount = items.count { it.rotation != 0 }
         AlertDialog(
             onDismissRequest = { viewModel.showConfirmDialog.value = false },
             title = { Text("원본 덮어쓰기") },
@@ -166,9 +345,7 @@ fun ImageRotatorScreen(viewModel: ImageRotatorViewModel = viewModel()) {
                 }
             },
             dismissButton = {
-                TextButton(onClick = { viewModel.showConfirmDialog.value = false }) {
-                    Text("취소")
-                }
+                TextButton(onClick = { viewModel.showConfirmDialog.value = false }) { Text("취소") }
             }
         )
     }
@@ -176,161 +353,113 @@ fun ImageRotatorScreen(viewModel: ImageRotatorViewModel = viewModel()) {
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text("이미지 회전기", fontWeight = FontWeight.Bold) },
+                title = { Text("${items.size}개 이미지 회전", fontWeight = FontWeight.Bold) },
                 colors = TopAppBarDefaults.topAppBarColors(
                     containerColor = MaterialTheme.colorScheme.primary,
-                    titleContentColor = MaterialTheme.colorScheme.onPrimary
+                    titleContentColor = Color.White
                 ),
-                actions = {
-                    if (images.isNotEmpty()) {
-                        IconButton(onClick = { viewModel.clearAll() }) {
-                            Icon(Icons.Default.Delete, "전체 삭제",
-                                tint = MaterialTheme.colorScheme.onPrimary)
-                        }
+                navigationIcon = {
+                    IconButton(onClick = { viewModel.backToGallery() }, enabled = !isSaving) {
+                        Icon(Icons.Default.ArrowBack, "뒤로", tint = Color.White)
                     }
                 }
             )
         }
     ) { padding ->
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(padding)
-        ) {
-            // 사진 선택 버튼
-            Button(
-                onClick = { docPickerLauncher.launch(arrayOf("image/*")) },
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(16.dp),
-                enabled = !isSaving,
-                shape = RoundedCornerShape(12.dp),
-                contentPadding = PaddingValues(vertical = 14.dp)
+        Column(Modifier.fillMaxSize().padding(padding)) {
+            // 안내 텍스트
+            val rotatedCount = items.count { it.rotation != 0 }
+            Text(
+                buildString {
+                    append("사진을 탭하면 개별 90° 회전")
+                    if (rotatedCount > 0) append(" · ${rotatedCount}개 회전 대기")
+                },
+                modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                color = MaterialTheme.colorScheme.primary,
+                fontSize = 13.sp,
+                fontWeight = FontWeight.Medium
+            )
+
+            // 이미지 그리드
+            LazyVerticalGrid(
+                columns = GridCells.Fixed(3),
+                modifier = Modifier.weight(1f).padding(horizontal = 4.dp),
+                contentPadding = PaddingValues(2.dp),
+                horizontalArrangement = Arrangement.spacedBy(4.dp),
+                verticalArrangement = Arrangement.spacedBy(4.dp)
             ) {
-                Icon(Icons.Default.PhotoLibrary, null, Modifier.size(24.dp))
-                Spacer(Modifier.width(8.dp))
-                Text("사진 선택하기", fontSize = 16.sp)
+                itemsIndexed(items) { index, item ->
+                    RotateThumbnail(
+                        item = item,
+                        onClick = { viewModel.rotateSingle(index) },
+                        enabled = !isSaving
+                    )
+                }
             }
 
-            if (images.isEmpty()) {
-                // 빈 상태 안내
-                Box(
-                    modifier = Modifier.weight(1f).fillMaxWidth(),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                        Icon(Icons.Default.PhotoLibrary, null,
-                            Modifier.size(80.dp), tint = Color.LightGray)
-                        Spacer(Modifier.height(16.dp))
-                        Text("회전할 사진을 선택해주세요",
-                            color = Color.Gray, fontSize = 16.sp)
-                        Spacer(Modifier.height(8.dp))
-                        Text("사진을 탭하면 개별 회전됩니다",
-                            color = Color.LightGray, fontSize = 13.sp)
-                    }
+            // 진행률
+            if (isSaving) {
+                Column(Modifier.padding(horizontal = 16.dp, vertical = 8.dp)) {
+                    LinearProgressIndicator(
+                        progress = progress,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    Text(
+                        "저장 중... ${(progress * 100).toInt()}%",
+                        modifier = Modifier.fillMaxWidth().padding(top = 4.dp),
+                        textAlign = TextAlign.Center,
+                        color = MaterialTheme.colorScheme.primary,
+                        fontSize = 13.sp
+                    )
                 }
-            } else {
-                // 상태 표시
-                val rotatedCount = images.count { it.rotation != 0 }
-                Text(
-                    buildString {
-                        append("${images.size}개 선택됨")
-                        if (rotatedCount > 0) append(" · ${rotatedCount}개 회전 대기")
-                    },
-                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
-                    color = MaterialTheme.colorScheme.primary,
-                    fontWeight = FontWeight.Medium,
-                    fontSize = 14.sp
-                )
+            }
 
-                // 이미지 그리드 - 탭하면 개별 90° 회전
-                LazyVerticalGrid(
-                    columns = GridCells.Fixed(3),
-                    modifier = Modifier.weight(1f).padding(horizontal = 8.dp),
-                    contentPadding = PaddingValues(4.dp),
-                    horizontalArrangement = Arrangement.spacedBy(4.dp),
-                    verticalArrangement = Arrangement.spacedBy(4.dp)
-                ) {
-                    itemsIndexed(images) { index, item ->
-                        ImageThumbnail(
-                            item = item,
-                            onClick = { viewModel.rotateSingle(index) },
-                            onRemove = { viewModel.removeImage(index) },
-                            enabled = !isSaving
-                        )
-                    }
-                }
-
-                // 진행률
-                if (isSaving) {
-                    Column(Modifier.padding(horizontal = 16.dp, vertical = 8.dp)) {
-                        LinearProgressIndicator(
-                            progress = progress,
-                            modifier = Modifier.fillMaxWidth()
-                        )
-                        Text(
-                            "저장 중... ${(progress * 100).toInt()}%",
-                            modifier = Modifier.fillMaxWidth().padding(top = 4.dp),
-                            textAlign = TextAlign.Center,
-                            color = MaterialTheme.colorScheme.primary,
-                            fontSize = 13.sp
-                        )
-                    }
-                }
-
-                // 하단 컨트롤
-                Surface(
-                    modifier = Modifier.fillMaxWidth(),
-                    shadowElevation = 8.dp,
-                    color = MaterialTheme.colorScheme.surface
-                ) {
-                    Column(Modifier.padding(16.dp).animateContentSize()) {
-                        // 일괄 회전 버튼
-                        Row(
-                            Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.spacedBy(12.dp)
-                        ) {
-                            OutlinedButton(
-                                onClick = { viewModel.rotateAllCounterClockwise() },
-                                modifier = Modifier.weight(1f),
-                                enabled = !isSaving,
-                                shape = RoundedCornerShape(12.dp),
-                                contentPadding = PaddingValues(vertical = 12.dp)
-                            ) {
-                                Icon(Icons.Default.RotateLeft, null)
-                                Spacer(Modifier.width(4.dp))
-                                Text("전체 -90°")
-                            }
-                            OutlinedButton(
-                                onClick = { viewModel.rotateAllClockwise() },
-                                modifier = Modifier.weight(1f),
-                                enabled = !isSaving,
-                                shape = RoundedCornerShape(12.dp),
-                                contentPadding = PaddingValues(vertical = 12.dp)
-                            ) {
-                                Icon(Icons.Default.RotateRight, null)
-                                Spacer(Modifier.width(4.dp))
-                                Text("전체 +90°")
-                            }
-                        }
-
-                        Spacer(Modifier.height(12.dp))
-
-                        // 저장 버튼
-                        Button(
-                            onClick = { viewModel.requestSave() },
-                            modifier = Modifier.fillMaxWidth(),
-                            enabled = !isSaving && images.any { it.rotation != 0 },
+            // 하단 컨트롤
+            Surface(
+                modifier = Modifier.fillMaxWidth(),
+                shadowElevation = 8.dp,
+                color = MaterialTheme.colorScheme.surface
+            ) {
+                Column(Modifier.padding(16.dp).animateContentSize()) {
+                    Row(
+                        Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
+                        OutlinedButton(
+                            onClick = { viewModel.rotateAllCounterClockwise() },
+                            modifier = Modifier.weight(1f),
+                            enabled = !isSaving,
                             shape = RoundedCornerShape(12.dp),
-                            contentPadding = PaddingValues(vertical = 14.dp),
-                            colors = ButtonDefaults.buttonColors(
-                                containerColor = Color(0xFF4CAF50)
-                            )
+                            contentPadding = PaddingValues(vertical = 12.dp)
                         ) {
-                            Icon(Icons.Default.Save, null)
-                            Spacer(Modifier.width(8.dp))
-                            Text("원본에 저장하기", fontSize = 16.sp)
+                            Icon(Icons.Default.RotateLeft, null)
+                            Spacer(Modifier.width(4.dp))
+                            Text("전체 -90°")
                         }
+                        OutlinedButton(
+                            onClick = { viewModel.rotateAllClockwise() },
+                            modifier = Modifier.weight(1f),
+                            enabled = !isSaving,
+                            shape = RoundedCornerShape(12.dp),
+                            contentPadding = PaddingValues(vertical = 12.dp)
+                        ) {
+                            Icon(Icons.Default.RotateRight, null)
+                            Spacer(Modifier.width(4.dp))
+                            Text("전체 +90°")
+                        }
+                    }
+                    Spacer(Modifier.height(12.dp))
+                    Button(
+                        onClick = { viewModel.requestSave() },
+                        modifier = Modifier.fillMaxWidth(),
+                        enabled = !isSaving && items.any { it.rotation != 0 },
+                        shape = RoundedCornerShape(12.dp),
+                        contentPadding = PaddingValues(vertical = 14.dp),
+                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF4CAF50))
+                    ) {
+                        Icon(Icons.Default.Save, null)
+                        Spacer(Modifier.width(8.dp))
+                        Text("원본에 저장하기", fontSize = 16.sp)
                     }
                 }
             }
@@ -339,10 +468,9 @@ fun ImageRotatorScreen(viewModel: ImageRotatorViewModel = viewModel()) {
 }
 
 @Composable
-fun ImageThumbnail(
-    item: ImageItem,
+fun RotateThumbnail(
+    item: RotateItem,
     onClick: () -> Unit,
-    onRemove: () -> Unit,
     enabled: Boolean
 ) {
     val hasRotation = item.rotation != 0
@@ -368,7 +496,6 @@ fun ImageThumbnail(
             contentScale = ContentScale.Crop
         )
 
-        // 회전 각도 뱃지
         if (hasRotation) {
             Box(
                 modifier = Modifier
@@ -379,21 +506,6 @@ fun ImageThumbnail(
             ) {
                 Text("${item.rotation}°", color = Color.White,
                     fontSize = 11.sp, fontWeight = FontWeight.Bold)
-            }
-        }
-
-        // 삭제 버튼
-        if (enabled) {
-            IconButton(
-                onClick = onRemove,
-                modifier = Modifier
-                    .align(Alignment.TopEnd)
-                    .size(28.dp)
-                    .padding(2.dp)
-                    .background(Color(0x88000000), CircleShape)
-            ) {
-                Icon(Icons.Default.Close, "삭제",
-                    tint = Color.White, modifier = Modifier.size(16.dp))
             }
         }
     }
