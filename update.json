@@ -1,6 +1,6 @@
 {
-  "versionCode": 3,
-  "versionName": "1.2.0",
-  "apkUrl": "https://github.com/4ndrxxs/ImageRotator/releases/download/v1.2.0/ImageRotator-release.apk",
-  "changelog": "크래시 수정, 안정성 개선"
+  "versionCode": 4,
+  "versionName": "1.2.1",
+  "apkUrl": "https://github.com/4ndrxxs/ImageRotator/releases/download/v1.2.1/ImageRotator-release.apk",
+  "changelog": "크래시 완전 수정"
 }
