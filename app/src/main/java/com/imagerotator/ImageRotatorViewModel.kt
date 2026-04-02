@@ -1,6 +1,7 @@
 package com.imagerotator
 
 import android.app.Application
+import android.app.PendingIntent
 import android.content.ContentUris
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
@@ -59,6 +60,11 @@ class ImageRotatorViewModel(application: Application) : AndroidViewModel(applica
     val progress = mutableFloatStateOf(0f)
     val showConfirmDialog = mutableStateOf(false)
     val resultMessage = mutableStateOf<String?>(null)
+
+    // Android 11+ 쓰기 권한 요청용
+    val writePermissionIntent = mutableStateOf<PendingIntent?>(null)
+
+    // ━━━ 갤러리 로드 ━━━
 
     fun loadGalleryImages() {
         if (isLoading.value) return
@@ -121,7 +127,6 @@ class ImageRotatorViewModel(application: Application) : AndroidViewModel(applica
 
         try {
             val cursor = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                // API 26+: Bundle 방식 - MediaStore에서 실제로 LIMIT/OFFSET 적용됨
                 val queryArgs = Bundle().apply {
                     putStringArray(
                         android.content.ContentResolver.QUERY_ARG_SORT_COLUMNS,
@@ -136,7 +141,6 @@ class ImageRotatorViewModel(application: Application) : AndroidViewModel(applica
                 }
                 resolver.query(collection, projection, queryArgs, null)
             } else {
-                // API 24-25 fallback: sortOrder에 LIMIT 직접 추가
                 val sortOrder =
                     "${MediaStore.Images.Media.DATE_MODIFIED} DESC LIMIT $limit OFFSET $offset"
                 resolver.query(collection, projection, null, null, sortOrder)
@@ -169,6 +173,8 @@ class ImageRotatorViewModel(application: Application) : AndroidViewModel(applica
         return images
     }
 
+    // ━━━ 선택 ━━━
+
     fun toggleSelection(id: Long) {
         val current = selectedIds.value.toMutableSet()
         if (id in current) current.remove(id) else current.add(id)
@@ -182,6 +188,8 @@ class ImageRotatorViewModel(application: Application) : AndroidViewModel(applica
     fun clearSelection() {
         selectedIds.value = emptySet()
     }
+
+    // ━━━ 회전 ━━━
 
     fun enterRotateMode() {
         val ids = selectedIds.value
@@ -215,6 +223,8 @@ class ImageRotatorViewModel(application: Application) : AndroidViewModel(applica
         }
     }
 
+    // ━━━ 저장 ━━━
+
     fun requestSave() {
         val rotatedCount = rotateItems.count { it.rotation != 0 }
         if (rotatedCount == 0) {
@@ -226,7 +236,32 @@ class ImageRotatorViewModel(application: Application) : AndroidViewModel(applica
 
     fun confirmSave() {
         showConfirmDialog.value = false
-        saveAll()
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            // Android 11+: 시스템에 쓰기 권한 요청 필요
+            try {
+                val uris = rotateItems.filter { it.rotation != 0 }.map { it.uri }
+                val resolver = getApplication<Application>().contentResolver
+                val pi = MediaStore.createWriteRequest(resolver, uris)
+                writePermissionIntent.value = pi
+                Log.d(TAG, "Requesting write permission for ${uris.size} files")
+            } catch (e: Exception) {
+                Log.e(TAG, "createWriteRequest failed", e)
+                resultMessage.value = "쓰기 권한 요청 실패: ${e.message}"
+            }
+        } else {
+            // Android 10 이하: 바로 저장
+            saveAll()
+        }
+    }
+
+    fun onWritePermissionResult(granted: Boolean) {
+        writePermissionIntent.value = null
+        if (granted) {
+            saveAll()
+        } else {
+            resultMessage.value = "파일 수정 권한이 거부되었습니다"
+        }
     }
 
     private fun saveAll() {
@@ -244,6 +279,7 @@ class ImageRotatorViewModel(application: Application) : AndroidViewModel(applica
                 val resolver = getApplication<Application>().contentResolver
                 toProcess.forEachIndexed { index, item ->
                     try {
+                        // 읽기
                         val inputStream = resolver.openInputStream(item.uri)
                             ?: throw Exception("읽기 실패")
                         val original = BitmapFactory.decodeStream(inputStream)
@@ -254,6 +290,7 @@ class ImageRotatorViewModel(application: Application) : AndroidViewModel(applica
                             return@forEachIndexed
                         }
 
+                        // 회전
                         val matrix = Matrix().apply { postRotate(item.rotation.toFloat()) }
                         val rotated = Bitmap.createBitmap(
                             original, 0, 0,
@@ -261,12 +298,14 @@ class ImageRotatorViewModel(application: Application) : AndroidViewModel(applica
                             matrix, true
                         )
 
+                        // 쓰기
                         val out = resolver.openOutputStream(item.uri, "wt")
-                            ?: throw Exception("쓰기 실패")
+                            ?: throw Exception("쓰기 실패 - openOutputStream null")
                         rotated.compress(Bitmap.CompressFormat.JPEG, 95, out)
                         out.flush()
                         out.close()
 
+                        // EXIF orientation 리셋
                         try {
                             resolver.openFileDescriptor(item.uri, "rw")?.use { pfd ->
                                 val exif = ExifInterface(pfd.fileDescriptor)

@@ -1,6 +1,6 @@
 {
-  "versionCode": 7,
-  "versionName": "1.5.0",
-  "apkUrl": "https://github.com/4ndrxxs/ImageRotator/releases/download/v1.5.0/ImageRotator-release.apk",
-  "changelog": "BOM 다운그레이드로 NoSuchMethodError 크래시 수정"
+  "versionCode": 8,
+  "versionName": "1.6.0",
+  "apkUrl": "https://github.com/4ndrxxs/ImageRotator/releases/download/v1.6.0/ImageRotator-release.apk",
+  "changelog": "Android 11+ 파일 쓰기 권한 수정 (MediaStore.createWriteRequest)"
 }

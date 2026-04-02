@@ -1,6 +1,7 @@
 package com.imagerotator
 
 import android.Manifest
+import android.app.Activity
 import android.content.Context
 import android.content.pm.PackageManager
 import android.net.Uri
@@ -11,6 +12,7 @@ import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
+import androidx.activity.result.IntentSenderRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.animateContentSize
 import androidx.compose.foundation.background
@@ -120,10 +122,8 @@ class MainActivity : ComponentActivity() {
             defaultHandler?.uncaughtException(thread, throwable)
         }
 
-        // 이전 크래시 로그 읽기
         val prevCrash = getSharedPreferences(CRASH_PREFS, Context.MODE_PRIVATE)
             .getString(CRASH_KEY, null)
-        // 읽은 뒤 삭제 (다음 실행에선 표시 안 함)
         if (prevCrash != null) {
             getSharedPreferences(CRASH_PREFS, Context.MODE_PRIVATE)
                 .edit().remove(CRASH_KEY).apply()
@@ -174,14 +174,13 @@ fun AppRoot(prevCrashLog: String? = null) {
         permissionGranted = granted
     }
 
-    // 권한 허용되면 이미지 로드
     LaunchedEffect(permissionGranted) {
         if (permissionGranted) {
             viewModel.loadGalleryImages()
         }
     }
 
-    // OTA 업데이트 체크
+    // OTA
     var showUpdateDialog by remember { mutableStateOf(false) }
     var updateInfo by remember { mutableStateOf<UpdateChecker.UpdateInfo?>(null) }
     LaunchedEffect(Unit) {
@@ -192,7 +191,6 @@ fun AppRoot(prevCrashLog: String? = null) {
                     pInfo.longVersionCode.toInt()
                 else @Suppress("DEPRECATION") pInfo.versionCode
             }.getOrDefault(1)
-
             UpdateChecker.checkForUpdate(versionCode)?.let {
                 updateInfo = it
                 showUpdateDialog = true
@@ -200,7 +198,7 @@ fun AppRoot(prevCrashLog: String? = null) {
         } catch (_: Exception) { }
     }
 
-    // 이전 크래시 로그 다이얼로그
+    // 크래시 로그
     var showCrashDialog by remember { mutableStateOf(prevCrashLog != null) }
     if (showCrashDialog && prevCrashLog != null) {
         AlertDialog(
@@ -219,14 +217,11 @@ fun AppRoot(prevCrashLog: String? = null) {
                 )
             },
             confirmButton = {
-                TextButton(onClick = { showCrashDialog = false }) {
-                    Text("확인")
-                }
+                TextButton(onClick = { showCrashDialog = false }) { Text("확인") }
             }
         )
     }
 
-    // 업데이트 다이얼로그
     if (showUpdateDialog && updateInfo != null) {
         AlertDialog(
             onDismissRequest = { showUpdateDialog = false },
@@ -282,7 +277,6 @@ fun GalleryScreen(vm: ImageRotatorViewModel) {
 
     val gridState = rememberLazyGridState()
 
-    // 스크롤 끝 근처 → 다음 페이지 로드
     LaunchedEffect(gridState) {
         snapshotFlow { gridState.layoutInfo }
             .collect { info ->
@@ -445,6 +439,28 @@ fun RotateScreen(vm: ImageRotatorViewModel) {
     val progress by vm.progress
     val showConfirmDialog by vm.showConfirmDialog
     val resultMessage by vm.resultMessage
+    val writePermissionIntent by vm.writePermissionIntent
+
+    // Android 11+ 쓰기 권한 시스템 다이얼로그 런처
+    val writePermissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.StartIntentSenderForResult()
+    ) { result ->
+        vm.onWritePermissionResult(result.resultCode == Activity.RESULT_OK)
+    }
+
+    // writePermissionIntent가 설정되면 시스템 다이얼로그 실행
+    LaunchedEffect(writePermissionIntent) {
+        writePermissionIntent?.let { pi ->
+            try {
+                writePermissionLauncher.launch(
+                    IntentSenderRequest.Builder(pi.intentSender).build()
+                )
+            } catch (e: Exception) {
+                Log.e("ImageRotator", "Write permission launch failed", e)
+                vm.onWritePermissionResult(false)
+            }
+        }
+    }
 
     LaunchedEffect(resultMessage) {
         resultMessage?.let {
